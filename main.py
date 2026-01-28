@@ -199,16 +199,32 @@ async def fetch_profile(session, user_id, token, retries=3):
 async def send_webhook(session, url, embed, retries=3):
     for attempt in range(retries):
         try:
-            async with session.post(url, json={'embeds': [embed]}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.post(
+                url,
+                json={'embeds': [embed]},
+                timeout=aiohttp.ClientTimeout(total=10),
+                ssl=False
+            ) as resp:
                 if resp.status in [200, 204]:
                     return True
                 elif resp.status == 429:
                     retry_after = float(resp.headers.get('Retry-After', '5'))
+                    log(f'  Webhook rate limited, waiting {retry_after}s...', COLORS['yellow'])
                     await asyncio.sleep(retry_after + 1)
                     continue
                 else:
+                    error_text = await resp.text()
+                    log(f'  Webhook failed: Status {resp.status}', COLORS['red'])
+                    log(f'  Response: {error_text[:200]}', COLORS['red'])
                     return False
-        except:
+        except asyncio.TimeoutError:
+            log(f'  Webhook timeout (attempt {attempt + 1}/{retries})', COLORS['yellow'])
+            if attempt < retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return False
+        except Exception as e:
+            log(f'  Webhook error: {type(e).__name__}: {str(e)}', COLORS['red'])
             if attempt < retries - 1:
                 await asyncio.sleep(1)
                 continue
@@ -250,7 +266,8 @@ class BadgeScraper(discord.Client):
     async def on_ready(self):
         log(f'✓ Logged in as {self.user}\n', COLORS['green'])
         try:
-            self.session = aiohttp.ClientSession()
+            connector = aiohttp.TCPConnector(ssl=False)
+            self.session = aiohttp.ClientSession(connector=connector)
             guild = self.get_guild(self.target_guild_id)
             if not guild:
                 try:
@@ -304,7 +321,10 @@ class BadgeScraper(discord.Client):
                     log(f'✓ [{i}/{len(target_members)}] {member.display_name} ({len(badges)} badges)', COLORS['green'])
                     log(f'   {badge_names}', COLORS['cyan'])
                 else:
+                    badge_names = ', '.join([b['name'] for b in badges])
                     log(f'✗ [{i}/{len(target_members)}] {member.display_name} - webhook failed', COLORS['red'])
+                    log(f'   Debug: User ID: {member.id}, Badges: {badge_names}', COLORS['yellow'])
+                    log(f'   Debug: Webhook URL length: {len(self.webhook_url)}', COLORS['yellow'])
                 await asyncio.sleep(0.4)
             log(f'✓ Complete! Sent {self.sent_count} users', COLORS['green'])
             final_embed = {
